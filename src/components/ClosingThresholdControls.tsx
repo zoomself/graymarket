@@ -104,30 +104,32 @@ export function ClosingThresholdControls({
           className="w-28 rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1.5 text-sm text-zinc-100 outline-none focus:border-[#FF5500] disabled:opacity-50"
         />
       </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => void apply()}
-          disabled={applying}
-          className="rounded-md bg-[#FF5500] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e64d00] disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {applying ? "应用中…" : "应用"}
-        </button>
-        <button
-          type="button"
-          onClick={() => void reset()}
-          disabled={applying}
-          className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          恢复默认
-        </button>
+      <div className="flex items-center gap-3 self-end">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => void apply()}
+            disabled={applying}
+            className="rounded-md bg-[#FF5500] px-3 py-1.5 text-xs font-medium text-white hover:bg-[#e64d00] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {applying ? "应用中…" : "应用"}
+          </button>
+          <button
+            type="button"
+            onClick={() => void reset()}
+            disabled={applying}
+            className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-400 hover:border-zinc-500 hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            恢复默认
+          </button>
+        </div>
+        <p className="m-0 text-[11px] leading-none text-zinc-500">
+          当前：暗盘 ≥ {yuanToWan(value.minDarkDelta)} 万 · 明盘 ≥{" "}
+          {yuanToWan(value.minOpenDelta)} 万（自 13:00 基准起算）
+        </p>
       </div>
-      <p className="text-[11px] text-zinc-500">
-        当前：暗盘 ≥ {yuanToWan(value.minDarkDelta)} 万 · 明盘 ≥{" "}
-        {yuanToWan(value.minOpenDelta)} 万（自 13:00 基准起算）
-      </p>
       {feedback && (
-        <p className="w-full text-[11px] text-emerald-400">{feedback}</p>
+        <p className="m-0 w-full basis-full text-[11px] text-emerald-400">{feedback}</p>
       )}
     </div>
   );
