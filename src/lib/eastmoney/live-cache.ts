@@ -1,4 +1,5 @@
 import { fetchAllDarkTradePages, fetchDarkTradePage, mapRawItem } from "./client";
+import { matchesRequestedTradeDate } from "@/lib/dates";
 import { getTabConfig, type TabKey } from "./tabs";
 import type { DarkTradeSnapshot } from "./types";
 
@@ -48,6 +49,15 @@ async function fetchPreview(
 
     if (response.errid !== 0 || !response.data?.length) {
       break;
+    }
+
+    if (page === 1 && !matchesRequestedTradeDate(date, response["1"])) {
+      return {
+        tradeDate: date,
+        totalCount: 0,
+        items: [],
+        complete: true,
+      };
     }
 
     totalCount = response["2"];

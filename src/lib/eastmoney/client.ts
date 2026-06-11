@@ -1,4 +1,5 @@
 import iconv from "iconv-lite";
+import { matchesRequestedTradeDate } from "@/lib/dates";
 import type {
   DarkTradeApiResponse,
   DarkTradeFetchParams,
@@ -87,10 +88,22 @@ export async function fetchAllDarkTradePages(
       break;
     }
 
+    if (startPage === 1 && !matchesRequestedTradeDate(params.date, response["1"])) {
+      break;
+    }
+
     tradeDate = response["1"];
     totalCount = response["2"];
     items.push(...response.data.map(mapRawItem));
     options?.onPage?.(startPage, response.data.length);
+
+    if (totalCount > 0 && items.length >= totalCount) {
+      break;
+    }
+
+    if (response.data.length < (params.numPerPage ?? 30)) {
+      break;
+    }
 
     startPage += 1;
     if (pageDelayMs > 0) {
@@ -108,7 +121,11 @@ export async function probeTradingDay(date: string): Promise<boolean> {
       startPage: 1,
       numPerPage: 1,
     });
-    return response.errid === 0 && (response.data?.length ?? 0) > 0;
+    return (
+      response.errid === 0 &&
+      (response.data?.length ?? 0) > 0 &&
+      matchesRequestedTradeDate(date, response["1"])
+    );
   } catch {
     return false;
   }

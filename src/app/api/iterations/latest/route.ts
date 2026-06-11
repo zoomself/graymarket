@@ -1,11 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { toApiDate, toDbDate } from "@/lib/dates";
 import { getLiveDarkTradeCached } from "@/lib/eastmoney/live-cache";
-import { parseTabKey } from "@/lib/eastmoney/tabs";
+import { dedupeSnapshotsByStockCode, isStockLikeTab, parseTabKey } from "@/lib/eastmoney/tabs";
 import { getTodayTradeDateString } from "@/lib/trading-hours";
 import { getSupabaseAnonClient } from "@/lib/supabase/server";
+import { fetchAllSnapshotsForIteration } from "@/lib/supabase/snapshots";
 
 export const maxDuration = 120;
+
+function emptyDateResponse(formattedDate: string, message?: string) {
+  return NextResponse.json({
+    source: "none",
+    iteration: null,
+    snapshots: [],
+    requestedDate: formattedDate,
+    message: message ?? `${formattedDate} 暂无暗盘数据，请选择有数据的交易日`,
+  });
+}
 
 export async function GET(request: NextRequest) {
   const dateParam = request.nextUrl.searchParams.get("date");
@@ -14,7 +25,7 @@ export async function GET(request: NextRequest) {
   const liveParam = request.nextUrl.searchParams.get("live");
   const preferLive = liveParam === "1" || liveParam === "true";
   const tab = parseTabKey(request.nextUrl.searchParams.get("tab"));
-  const isStockTab = tab === "stock";
+  const isStockLike = isStockLikeTab(tab);
 
   try {
     let iteration = null;
@@ -37,33 +48,37 @@ export async function GET(request: NextRequest) {
       } else if (dbIteration) {
         iteration = dbIteration;
 
-        const { data: dbSnapshots, error: snapshotsError } = await supabase
-          .from("dark_trade_snapshots")
-          .select("*")
-          .eq("iteration_id", dbIteration.id)
-          .order("rank_no", { ascending: true });
-
-        if (snapshotsError) {
-          console.warn("Supabase snapshots query failed:", snapshotsError.message);
-        } else {
-          snapshots = dbSnapshots ?? [];
+        try {
+          const dbSnapshots = await fetchAllSnapshotsForIteration<Record<string, unknown>>(
+            supabase,
+            dbIteration.id as string,
+            "*",
+          );
+          snapshots = dbSnapshots;
+        } catch (snapshotsError) {
+          console.warn(
+            "Supabase snapshots query failed:",
+            snapshotsError instanceof Error ? snapshotsError.message : snapshotsError,
+          );
         }
       }
     } catch (error) {
       console.warn("Supabase unavailable:", error);
     }
 
-    if ((!isStockTab || !iteration || snapshots.length === 0) || preferLive) {
-      const live = await getLiveDarkTradeCached(toApiDate(formattedDate), tab);
+    if ((!isStockLike || !iteration || snapshots.length === 0) || preferLive) {
+      const requestedApiDate = toApiDate(formattedDate);
+      const today = getTodayTradeDateString();
+
+      if (!preferLive && requestedApiDate !== today) {
+        return emptyDateResponse(formattedDate);
+      }
+
+      const live = await getLiveDarkTradeCached(requestedApiDate, tab);
       const capturedAt = new Date().toISOString();
 
       if (live.items.length === 0) {
-        return NextResponse.json({
-          source: "live",
-          iteration: null,
-          snapshots: [],
-          message: "该日期无交易数据，请选择交易日",
-        });
+        return emptyDateResponse(formattedDate);
       }
 
       return NextResponse.json({
@@ -80,29 +95,31 @@ export async function GET(request: NextRequest) {
           totalCount: live.totalCount,
           status: "live",
         },
-        snapshots: live.items.map((item, index) => ({
-          id: index + 1,
-          iterationId: "live",
-          tradeDate: formattedDate,
-          stockCode: item.stockCode,
-          stockName: item.stockName,
-          industry: item.industry,
-          concept: item.concept,
-          darkCapital: item.darkCapital,
-          openCapital: item.openCapital,
-          totalCapital: item.totalCapital,
-          darkActivity: item.darkActivity,
-          priceRaw: item.priceRaw,
-          changeRatio: item.changeRatio,
-          rankNo: item.rankNo || index + 1,
-          capturedAt,
-        })),
+        snapshots: dedupeSnapshotsByStockCode(
+          live.items.map((item, index) => ({
+            id: index + 1,
+            iterationId: "live",
+            tradeDate: formattedDate,
+            stockCode: item.stockCode,
+            stockName: item.stockName,
+            industry: item.industry,
+            concept: item.concept,
+            darkCapital: item.darkCapital,
+            openCapital: item.openCapital,
+            totalCapital: item.totalCapital,
+            darkActivity: item.darkActivity,
+            priceRaw: item.priceRaw,
+            changeRatio: item.changeRatio,
+            rankNo: item.rankNo || index + 1,
+            capturedAt,
+          })),
+        ),
       });
     }
 
     return NextResponse.json({
       source: "database",
-      tab: "stock",
+      tab: tab === "overview" ? "overview" : tab,
       iteration: {
         id: iteration.id,
         tradeDate: iteration.trade_date,
@@ -112,23 +129,25 @@ export async function GET(request: NextRequest) {
         recordCount: iteration.record_count,
         status: iteration.status,
       },
-      snapshots: snapshots.map((row) => ({
-        id: row.id,
-        iterationId: row.iteration_id,
-        tradeDate: row.trade_date,
-        stockCode: row.stock_code,
-        stockName: row.stock_name,
-        industry: row.industry,
-        concept: row.concept,
-        darkCapital: row.dark_capital,
-        openCapital: row.open_capital,
-        totalCapital: row.total_capital,
-        darkActivity: row.dark_activity,
-        priceRaw: row.price_raw,
-        changeRatio: row.change_ratio,
-        rankNo: row.rank_no,
-        capturedAt: row.captured_at,
-      })),
+      snapshots: dedupeSnapshotsByStockCode(
+        snapshots.map((row) => ({
+          id: row.id,
+          iterationId: row.iteration_id,
+          tradeDate: row.trade_date,
+          stockCode: row.stock_code as string,
+          stockName: row.stock_name,
+          industry: row.industry,
+          concept: row.concept,
+          darkCapital: row.dark_capital,
+          openCapital: row.open_capital,
+          totalCapital: row.total_capital,
+          darkActivity: row.dark_activity,
+          priceRaw: row.price_raw,
+          changeRatio: row.change_ratio,
+          rankNo: row.rank_no as number,
+          capturedAt: row.captured_at,
+        })),
+      ),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";

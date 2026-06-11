@@ -7,3 +7,11 @@ export function toDbDate(yyyymmdd: string): string {
 export function toApiDate(input: string): string {
   return input.replace(/-/g, "");
 }
+
+/** East Money may return the nearest trading day when the requested date has no data. */
+export function matchesRequestedTradeDate(
+  requested: string,
+  apiTradeDate: number,
+): boolean {
+  return toApiDate(requested) === String(apiTradeDate);
+}

@@ -154,7 +154,7 @@ export function DarkTradeTable({
               sorted.map((row) => {
                 const selected = selectedStockCode === row.stockCode;
                 return (
-                  <Fragment key={row.stockCode}>
+                  <Fragment key={`${row.rankNo}-${row.stockCode}`}>
                     <tr
                       onClick={onRowClick ? () => onRowClick(row) : undefined}
                       onMouseEnter={

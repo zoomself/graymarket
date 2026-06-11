@@ -31,3 +31,14 @@ body {
 .text-fall {
   color: var(--fall);
 }
+
+.date-picker-input::-webkit-calendar-picker-indicator {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  opacity: 0;
+}

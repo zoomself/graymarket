@@ -1,7 +1,8 @@
 "use client";
 
 import { startTransition, useEffect, useMemo, useRef, useState } from "react";
-import { DatePicker, todayYyyymmdd } from "@/components/DatePicker";
+import { DatePicker, buildAllowedTradeDates, isAllowedTradeDate, todayYyyymmdd } from "@/components/DatePicker";
+import { OverviewDashboard } from "@/components/OverviewDashboard";
 import { DarkTradeTable, type TableSnapshot } from "@/components/DarkTradeTable";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { SearchBox } from "@/components/SearchBox";
@@ -9,7 +10,7 @@ import {
   invalidateStockHistoryCache,
   preloadChartLibrary,
 } from "@/lib/client/stock-history-cache";
-import { TABS, filterSnapshots, type TabKey } from "@/lib/eastmoney/tabs";
+import { TABS, dedupeSnapshotsByStockCode, filterSnapshots, type TabKey } from "@/lib/eastmoney/tabs";
 import type { SortDirection, SortField } from "@/lib/eastmoney/types";
 
 interface IterationInfo {
@@ -25,18 +26,25 @@ interface IterationInfo {
 const POLL_INTERVAL_MS = 5000;
 const DISCLAIMER_KEY = "graymarket-disclaimer";
 
+function formatTradeDateLabel(yyyymmdd: string): string {
+  if (yyyymmdd.length !== 8) return yyyymmdd;
+  return `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+}
+
 export default function HomePage() {
   const [tradeDate, setTradeDate] = useState(todayYyyymmdd);
   const [rows, setRows] = useState<TableSnapshot[]>([]);
   const [iteration, setIteration] = useState<IterationInfo | null>(null);
-  const [dataSource, setDataSource] = useState<"database" | "live" | null>(null);
+  const [dataSource, setDataSource] = useState<"database" | "live" | "none" | null>(null);
   const [liveComplete, setLiveComplete] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [listMessage, setListMessage] = useState<string | null>(null);
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
   const [sortField, setSortField] = useState<SortField>("darkCapital");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedStock, setSelectedStock] = useState<TableSnapshot | null>(null);
-  const [activeTab, setActiveTab] = useState<TabKey>("stock");
+  const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [searchQuery, setSearchQuery] = useState("");
   const [disclaimerAck, setDisclaimerAck] = useState(true);
   const [mounted, setMounted] = useState(false);
@@ -49,10 +57,50 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    if (activeTab === "stock") {
+    if (activeTab === "stock" || activeTab === "overview") {
       preloadChartLibrary();
     }
   }, [activeTab]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void fetch("/api/iterations/dates")
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled || data.error) return;
+        setAvailableDates(data.dates ?? []);
+      })
+      .catch(() => {
+        // Non-fatal.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const allowedDates = useMemo(
+    () => buildAllowedTradeDates(availableDates),
+    [availableDates],
+  );
+
+  useEffect(() => {
+    if (availableDates.length === 0) return;
+    if (!isAllowedTradeDate(tradeDate, availableDates)) {
+      const today = todayYyyymmdd();
+      const fallback = allowedDates.includes(today)
+        ? today
+        : (allowedDates[0] ?? today);
+      if (fallback !== tradeDate) {
+        setTradeDate(fallback);
+        setRows([]);
+        setSelectedStock(null);
+        setListMessage(null);
+        setLoading(true);
+      }
+    }
+  }, [availableDates, allowedDates, tradeDate]);
 
   const historyVersion =
     iteration && dataSource === "database"
@@ -97,30 +145,33 @@ export default function HomePage() {
         }
 
         setError(null);
+        setListMessage(data.message ?? null);
         setDataSource(data.source ?? "database");
         setLiveComplete(data.complete !== false);
         setIteration(data.iteration);
         setRows(
-          (data.snapshots ?? []).map(
-            (s: {
-              stockCode: string;
-              stockName: string;
-              darkCapital: number;
-              openCapital: number;
-              darkActivity: number;
-              priceRaw: number;
-              changeRatio: number;
-              rankNo: number;
-            }) => ({
-              stockCode: s.stockCode,
-              stockName: s.stockName,
-              darkCapital: s.darkCapital,
-              openCapital: s.openCapital,
-              darkActivity: s.darkActivity,
-              priceRaw: s.priceRaw,
-              changeRatio: s.changeRatio,
-              rankNo: s.rankNo,
-            }),
+          dedupeSnapshotsByStockCode(
+            (data.snapshots ?? []).map(
+              (s: {
+                stockCode: string;
+                stockName: string;
+                darkCapital: number;
+                openCapital: number;
+                darkActivity: number;
+                priceRaw: number;
+                changeRatio: number;
+                rankNo: number;
+              }) => ({
+                stockCode: s.stockCode,
+                stockName: s.stockName,
+                darkCapital: s.darkCapital,
+                openCapital: s.openCapital,
+                darkActivity: s.darkActivity,
+                priceRaw: s.priceRaw,
+                changeRatio: s.changeRatio,
+                rankNo: s.rankNo,
+              }),
+            ),
           ),
         );
       } catch (err) {
@@ -165,6 +216,19 @@ export default function HomePage() {
     [rows, searchQuery],
   );
 
+  const handleTradeDateChange = (date: string) => {
+    if (date === tradeDate) return;
+    if (!isAllowedTradeDate(date, availableDates)) return;
+    setTradeDate(date);
+    setSelectedStock(null);
+    setSearchQuery("");
+    setRows([]);
+    setListMessage(null);
+    setLoading(true);
+    invalidateStockHistoryCache(tradeDate);
+    invalidateStockHistoryCache(date);
+  };
+
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDirection((d) => (d === "desc" ? "asc" : "desc"));
@@ -186,7 +250,7 @@ export default function HomePage() {
         />
       )}
 
-      <header className="relative z-10 border-b border-zinc-800 bg-zinc-950/90">
+      <header className="relative z-30 border-b border-zinc-800 bg-zinc-950/90">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <div>
             <div className="flex items-center gap-2">
@@ -195,7 +259,12 @@ export default function HomePage() {
             </div>
             <p className="mt-1 text-xs text-zinc-500">监测主力交易动向 · 把握投资机会</p>
           </div>
-          <DatePicker value={tradeDate} onChange={setTradeDate} />
+          <DatePicker
+            value={tradeDate}
+            onChange={handleTradeDateChange}
+            maxDate={todayYyyymmdd()}
+            allowedDates={allowedDates}
+          />
         </div>
       </header>
 
@@ -223,7 +292,10 @@ export default function HomePage() {
         </div>
 
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <SearchBox value={searchQuery} onChange={setSearchQuery} />
+          {activeTab !== "overview" && (
+            <SearchBox value={searchQuery} onChange={setSearchQuery} />
+          )}
+          {activeTab === "overview" && <div className="flex-1" />}
           <div className="text-sm text-zinc-400">
             {iteration ? (
               <>
@@ -282,42 +354,57 @@ export default function HomePage() {
               </>
             ) : loading ? (
               "正在加载数据..."
+            ) : listMessage ? (
+              listMessage
             ) : (
-              "暂无数据"
+              `${formatTradeDateLabel(tradeDate)} 暂无数据`
             )}
           </div>
           {error && <span className="text-red-400">{error}</span>}
         </div>
 
         <div className="mt-4">
-          <DarkTradeTable
-            rows={filteredRows}
-            sortField={sortField}
-            sortDirection={sortDirection}
-            onSort={handleSort}
-            onRowClick={
-              activeTab === "stock"
-                ? (row) =>
-                    setSelectedStock((prev) =>
-                      prev?.stockCode === row.stockCode ? null : row,
-                    )
-                : undefined
-            }
-            selectedStockCode={
-              activeTab === "stock" ? selectedStock?.stockCode : null
-            }
-            tradeDate={tradeDate}
-            latestIterationNo={iteration?.iterationNo}
-            latestCapturedAt={iteration?.completedAt}
-            historyVersion={historyVersion}
-            liveUpdates={dataSource === "database" || dataSource === "live"}
-            loading={loading}
-            emptyMessage={
-              searchQuery.trim() && rows.length > 0
-                ? "未找到匹配的标的"
-                : undefined
-            }
-          />
+          {activeTab === "overview" ? (
+            <OverviewDashboard
+              rows={rows}
+              tradeDate={tradeDate}
+              tradeDateLabel={formatTradeDateLabel(tradeDate)}
+              loading={loading}
+              emptyMessage={
+                listMessage ?? `${formatTradeDateLabel(tradeDate)} 暂无暗盘数据`
+              }
+            />
+          ) : (
+            <DarkTradeTable
+              rows={filteredRows}
+              sortField={sortField}
+              sortDirection={sortDirection}
+              onSort={handleSort}
+              onRowClick={
+                activeTab === "stock"
+                  ? (row) =>
+                      setSelectedStock((prev) =>
+                        prev?.stockCode === row.stockCode ? null : row,
+                      )
+                  : undefined
+              }
+              selectedStockCode={
+                activeTab === "stock" ? selectedStock?.stockCode : null
+              }
+              tradeDate={tradeDate}
+              latestIterationNo={iteration?.iterationNo}
+              latestCapturedAt={iteration?.completedAt}
+              historyVersion={historyVersion}
+              liveUpdates={dataSource === "database" || dataSource === "live"}
+              loading={loading}
+              emptyMessage={
+                listMessage ??
+                (searchQuery.trim() && rows.length > 0
+                  ? "未找到匹配的标的"
+                  : `${formatTradeDateLabel(tradeDate)} 暂无暗盘数据`)
+              }
+            />
+          )}
         </div>
       </main>
     </div>

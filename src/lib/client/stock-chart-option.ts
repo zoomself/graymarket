@@ -6,21 +6,34 @@ function toPriceYuan(priceRaw: number): number {
   return priceRaw / 1000;
 }
 
-export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOption {
-  const labels = points.map((p) => {
-    const d = new Date(p.capturedAt);
+function formatAxisTime(capturedAt: string, compact: boolean): string {
+  const d = new Date(capturedAt);
+  if (compact) {
     return d.toLocaleTimeString("zh-CN", {
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
     });
+  }
+  return d.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   });
+}
 
+/** Show about 6–10 x-axis ticks regardless of point count. */
+function axisLabelInterval(pointCount: number): number | "auto" {
+  if (pointCount <= 10) return 0;
+  return Math.max(1, Math.ceil(pointCount / 8) - 1);
+}
+
+export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOption {
+  const compactTime = points.length > 10;
+  const labels = points.map((p) => formatAxisTime(p.capturedAt, compactTime));
   const darkData = points.map((p) => p.darkCapital);
   const openData = points.map((p) => p.openCapital);
   const priceData = points.map((p) => toPriceYuan(p.priceRaw));
-  const dense = points.length > 12;
-  const showSymbol = points.length <= 16;
+  const showSymbol = points.length <= 8;
 
   return {
     backgroundColor: "transparent",
@@ -40,8 +53,11 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         if (!items?.length) return "";
         const idx = items[0].dataIndex;
         const point = points[idx];
+        const timeLabel = point
+          ? formatAxisTime(point.capturedAt, false)
+          : items[0].axisValue;
         let html = point
-          ? `#${point.iterationNo} ${items[0].axisValue}<br/>`
+          ? `#${point.iterationNo} ${timeLabel}<br/>`
           : `${items[0].axisValue}<br/>`;
         for (const item of items) {
           const val =
@@ -62,22 +78,9 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
       left: 72,
       right: 72,
       top: 48,
-      bottom: dense ? 56 : 32,
+      bottom: points.length > 24 ? 42 : 28,
+      containLabel: false,
     },
-    dataZoom: dense
-      ? [
-          { type: "inside", start: Math.max(0, 100 - (24 / points.length) * 100) },
-          {
-            type: "slider",
-            height: 18,
-            bottom: 4,
-            borderColor: "#3f3f46",
-            fillerColor: "rgba(255, 85, 0, 0.15)",
-            handleStyle: { color: "#FF5500" },
-            textStyle: { color: "#71717a" },
-          },
-        ]
-      : undefined,
     xAxis: {
       type: "category",
       data: labels,
@@ -85,8 +88,10 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
       axisLine: { lineStyle: { color: "#52525b" } },
       axisLabel: {
         color: "#71717a",
-        fontSize: 11,
-        interval: dense ? Math.ceil(points.length / 12) - 1 : 0,
+        fontSize: 10,
+        interval: axisLabelInterval(points.length),
+        hideOverlap: true,
+        rotate: points.length > 24 ? 35 : 0,
       },
     },
     yAxis: [
@@ -98,6 +103,7 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         splitLine: { lineStyle: { color: "#27272a" } },
         axisLabel: {
           color: "#71717a",
+          fontSize: 10,
           formatter: (v: number) => formatCapital(v),
         },
       },
@@ -109,6 +115,7 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         splitLine: { show: false },
         axisLabel: {
           color: "#a1a1aa",
+          fontSize: 10,
           formatter: (v: number) => v.toFixed(2),
         },
       },
@@ -120,7 +127,7 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         yAxisIndex: 0,
         smooth: true,
         showSymbol,
-        symbolSize: 6,
+        symbolSize: 5,
         data: darkData,
         lineStyle: { color: "#3b82f6", width: 2 },
         itemStyle: { color: "#3b82f6" },
@@ -132,7 +139,7 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         yAxisIndex: 0,
         smooth: true,
         showSymbol,
-        symbolSize: 6,
+        symbolSize: 5,
         data: openData,
         lineStyle: { color: "#FF5500", width: 2 },
         itemStyle: { color: "#FF5500" },
@@ -144,7 +151,7 @@ export function buildStockChartOption(points: StockHistoryPoint[]): EChartsOptio
         yAxisIndex: 1,
         smooth: true,
         showSymbol,
-        symbolSize: 6,
+        symbolSize: 5,
         data: priceData,
         lineStyle: { color: "#e4e4e7", width: 2 },
         itemStyle: { color: "#e4e4e7" },

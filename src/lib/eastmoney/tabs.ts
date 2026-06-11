@@ -1,4 +1,4 @@
-export type TabKey = "stock" | "industry" | "concept";
+export type TabKey = "overview" | "stock" | "industry" | "concept";
 
 export interface TabConfig {
   key: TabKey;
@@ -9,6 +9,7 @@ export interface TabConfig {
 
 /** Matches East Money graymarket API params */
 export const TABS: TabConfig[] = [
+  { key: "overview", label: "概览", market: "", datetype: "" },
   { key: "stock", label: "个股", market: "", datetype: "" },
   { key: "industry", label: "行业板块", market: "90", datetype: "2" },
   { key: "concept", label: "概念板块", market: "90", datetype: "3" },
@@ -19,9 +20,15 @@ export function getTabConfig(key: TabKey): TabConfig {
 }
 
 export function parseTabKey(value: string | null | undefined): TabKey {
+  if (value === "overview") return "overview";
   if (value === "block" || value === "industry") return "industry";
   if (value === "concept") return "concept";
   return "stock";
+}
+
+/** Overview uses the same underlying dataset as the stock tab. */
+export function isStockLikeTab(tab: TabKey): boolean {
+  return tab === "overview" || tab === "stock";
 }
 
 export function filterSnapshots<
@@ -35,4 +42,20 @@ export function filterSnapshots<
       row.stockCode.toLowerCase().includes(q) ||
       row.stockName.toLowerCase().includes(q),
   );
+}
+
+/** East Money occasionally returns duplicate codes; keep the best-ranked row. */
+export function dedupeSnapshotsByStockCode<
+  T extends { stockCode: string; rankNo: number },
+>(rows: T[]): T[] {
+  const byCode = new Map<string, T>();
+
+  for (const row of rows) {
+    const existing = byCode.get(row.stockCode);
+    if (!existing || row.rankNo < existing.rankNo) {
+      byCode.set(row.stockCode, row);
+    }
+  }
+
+  return [...byCode.values()].sort((a, b) => a.rankNo - b.rankNo);
 }
