@@ -1,4 +1,4 @@
-export type TabKey = "overview" | "stock" | "industry" | "concept";
+export type TabKey = "overview" | "stock" | "industry" | "concept" | "closing";
 
 export interface TabConfig {
   key: TabKey;
@@ -13,6 +13,7 @@ export const TABS: TabConfig[] = [
   { key: "stock", label: "个股", market: "", datetype: "" },
   { key: "industry", label: "行业板块", market: "90", datetype: "2" },
   { key: "concept", label: "概念板块", market: "90", datetype: "3" },
+  { key: "closing", label: "尾盘异动", market: "", datetype: "" },
 ];
 
 export function getTabConfig(key: TabKey): TabConfig {
@@ -23,12 +24,13 @@ export function parseTabKey(value: string | null | undefined): TabKey {
   if (value === "overview") return "overview";
   if (value === "block" || value === "industry") return "industry";
   if (value === "concept") return "concept";
+  if (value === "closing" || value === "tail") return "closing";
   return "stock";
 }
 
-/** Overview uses the same underlying dataset as the stock tab. */
+/** Overview and closing reuse stock-level iteration data or dedicated APIs. */
 export function isStockLikeTab(tab: TabKey): boolean {
-  return tab === "overview" || tab === "stock";
+  return tab === "overview" || tab === "stock" || tab === "closing";
 }
 
 export function filterSnapshots<

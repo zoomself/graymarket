@@ -1,7 +1,9 @@
 "use client";
 
-import { startTransition, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DatePicker, buildAllowedTradeDates, isAllowedTradeDate, todayYyyymmdd } from "@/components/DatePicker";
+import { ClosingMoveTable } from "@/components/ClosingMoveTable";
+import { ClosingThresholdControls } from "@/components/ClosingThresholdControls";
 import { OverviewDashboard } from "@/components/OverviewDashboard";
 import { DarkTradeTable, type TableSnapshot } from "@/components/DarkTradeTable";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
@@ -10,6 +12,14 @@ import {
   invalidateStockHistoryCache,
   preloadChartLibrary,
 } from "@/lib/client/stock-history-cache";
+import type { ClosingMoveRow } from "@/lib/analytics/closing-move";
+import {
+  closingThresholdsToQuery,
+  DEFAULT_CLOSING_THRESHOLDS,
+  loadClosingThresholdsFromStorage,
+  saveClosingThresholdsToStorage,
+  type ClosingThresholds,
+} from "@/lib/analytics/closing-thresholds";
 import { TABS, dedupeSnapshotsByStockCode, filterSnapshots, type TabKey } from "@/lib/eastmoney/tabs";
 import type { SortDirection, SortField } from "@/lib/eastmoney/types";
 
@@ -21,6 +31,16 @@ interface IterationInfo {
   recordCount: number;
   totalCount?: number;
   status?: string;
+}
+
+interface ClosingMeta {
+  baselineIterationNo: number | null;
+  latestIterationNo: number | null;
+  morningIterationNo: number | null;
+  baselineTime: string | null;
+  latestTime: string | null;
+  iterationCount: number;
+  message?: string | null;
 }
 
 const POLL_INTERVAL_MS = 5000;
@@ -45,6 +65,15 @@ export default function HomePage() {
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
   const [selectedStock, setSelectedStock] = useState<TableSnapshot | null>(null);
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
+  const [closingRows, setClosingRows] = useState<ClosingMoveRow[]>([]);
+  const [closingMeta, setClosingMeta] = useState<ClosingMeta | null>(null);
+  const [closingThresholds, setClosingThresholds] = useState<ClosingThresholds>(
+    DEFAULT_CLOSING_THRESHOLDS,
+  );
+  const [thresholdsReady, setThresholdsReady] = useState(false);
+  const [closingApplying, setClosingApplying] = useState(false);
+  const [closingAppliedAt, setClosingAppliedAt] = useState<number | null>(null);
+  const closingThresholdsRef = useRef(closingThresholds);
   const [searchQuery, setSearchQuery] = useState("");
   const [disclaimerAck, setDisclaimerAck] = useState(true);
   const [mounted, setMounted] = useState(false);
@@ -53,11 +82,88 @@ export default function HomePage() {
     startTransition(() => {
       setMounted(true);
       setDisclaimerAck(localStorage.getItem(DISCLAIMER_KEY) === "1");
+      setClosingThresholds(loadClosingThresholdsFromStorage());
+      setThresholdsReady(true);
     });
   }, []);
 
   useEffect(() => {
-    if (activeTab === "stock" || activeTab === "overview") {
+    closingThresholdsRef.current = closingThresholds;
+  }, [closingThresholds]);
+
+  const loadClosing = useCallback(
+    async (showLoading: boolean, thresholds: ClosingThresholds) => {
+      if (showLoading) {
+        setLoading(true);
+      }
+      try {
+        const res = await fetch(
+          `/api/closing/moves?date=${tradeDate}&${closingThresholdsToQuery(thresholds)}`,
+          { cache: "no-store" },
+        );
+        const data = await res.json();
+
+        if (data.error) {
+          setError(data.error);
+          return false;
+        }
+
+        setError(null);
+        setDataSource("database");
+        setLiveComplete(true);
+        setListMessage(data.message ?? null);
+        setClosingRows(data.rows ?? []);
+        setClosingMeta({
+          baselineIterationNo: data.baselineIterationNo ?? null,
+          latestIterationNo: data.latestIterationNo ?? null,
+          morningIterationNo: data.morningIterationNo ?? null,
+          baselineTime: data.baselineTime ?? null,
+          latestTime: data.latestTime ?? null,
+          iterationCount: data.iterationCount ?? 0,
+          message: data.message ?? null,
+        });
+        setIteration(
+          data.latestIterationNo
+            ? {
+                id: "closing",
+                tradeDate,
+                iterationNo: data.latestIterationNo,
+                completedAt: data.latestTime ?? null,
+                recordCount: data.rows?.length ?? 0,
+                status: "completed",
+              }
+            : null,
+        );
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "加载失败");
+        return false;
+      } finally {
+        if (showLoading) {
+          setLoading(false);
+        }
+      }
+    },
+    [tradeDate],
+  );
+
+  const handleClosingThresholdsApply = useCallback(
+    async (next: ClosingThresholds) => {
+      setClosingApplying(true);
+      setClosingThresholds(next);
+      saveClosingThresholdsToStorage(next);
+      closingThresholdsRef.current = next;
+      const ok = await loadClosing(true, next);
+      if (ok) {
+        setClosingAppliedAt(Date.now());
+      }
+      setClosingApplying(false);
+    },
+    [loadClosing],
+  );
+
+  useEffect(() => {
+    if (activeTab === "stock" || activeTab === "overview" || activeTab === "closing") {
       preloadChartLibrary();
     }
   }, [activeTab]);
@@ -127,7 +233,7 @@ export default function HomePage() {
   useEffect(() => {
     let cancelled = false;
 
-    async function load(showLoading: boolean) {
+    async function loadLatest(showLoading: boolean) {
       if (showLoading && !cancelled) {
         setLoading(true);
       }
@@ -188,11 +294,23 @@ export default function HomePage() {
     const pollInterval =
       dataSource === "live" && !liveComplete ? 15_000 : POLL_INTERVAL_MS;
 
+    if (!thresholdsReady) return;
+
     const initialTimer = window.setTimeout(() => {
-      void load(true);
+      if (cancelled) return;
+      if (activeTab === "closing") {
+        void loadClosing(true, closingThresholdsRef.current);
+      } else {
+        void loadLatest(true);
+      }
     }, 0);
     const pollTimer = window.setInterval(() => {
-      void load(false);
+      if (cancelled) return;
+      if (activeTab === "closing") {
+        void loadClosing(false, closingThresholdsRef.current);
+      } else {
+        void loadLatest(false);
+      }
     }, pollInterval);
 
     return () => {
@@ -200,7 +318,7 @@ export default function HomePage() {
       window.clearTimeout(initialTimer);
       window.clearInterval(pollTimer);
     };
-  }, [tradeDate, activeTab, dataSource, liveComplete]);
+  }, [tradeDate, activeTab, dataSource, liveComplete, thresholdsReady, loadClosing]);
 
   const handleTabChange = (tab: TabKey) => {
     if (tab === activeTab) return;
@@ -208,12 +326,19 @@ export default function HomePage() {
     setSelectedStock(null);
     setSearchQuery("");
     setRows([]);
+    setClosingRows([]);
+    setClosingMeta(null);
     setLoading(true);
   };
 
   const filteredRows = useMemo(
     () => filterSnapshots(rows, searchQuery),
     [rows, searchQuery],
+  );
+
+  const filteredClosingRows = useMemo(
+    () => filterSnapshots(closingRows, searchQuery),
+    [closingRows, searchQuery],
   );
 
   const handleTradeDateChange = (date: string) => {
@@ -223,6 +348,8 @@ export default function HomePage() {
     setSelectedStock(null);
     setSearchQuery("");
     setRows([]);
+    setClosingRows([]);
+    setClosingMeta(null);
     setListMessage(null);
     setLoading(true);
     invalidateStockHistoryCache(tradeDate);
@@ -296,7 +423,37 @@ export default function HomePage() {
           )}
           {activeTab === "overview" && <div className="flex-1" />}
           <div className="text-sm text-zinc-400">
-            {iteration ? (
+            {activeTab === "closing" ? (
+              closingMeta ? (
+                <>
+                  13:00基准 #{closingMeta.baselineIterationNo ?? "—"} → 最新 #
+                  <span className="text-[#FF5500]">{closingMeta.latestIterationNo ?? "—"}</span>
+                  {" · "}
+                  命中 {closingRows.length} 只
+                  {searchQuery.trim() && (
+                    <>
+                      {" · "}
+                      筛选 {filteredClosingRows.length} 只
+                    </>
+                  )}
+                  {closingMeta.latestTime && (
+                    <>
+                      {" · "}
+                      更新{" "}
+                      {new Date(closingMeta.latestTime).toLocaleTimeString("zh-CN", {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })}
+                    </>
+                  )}
+                </>
+              ) : loading ? (
+                "正在分析尾盘异动..."
+              ) : (
+                listMessage ?? `${formatTradeDateLabel(tradeDate)} 暂无尾盘数据`
+              )
+            ) : iteration ? (
               <>
                 {dataSource === "live" ? (
                   <>
@@ -373,6 +530,36 @@ export default function HomePage() {
                 listMessage ?? `${formatTradeDateLabel(tradeDate)} 暂无暗盘数据`
               }
             />
+          ) : activeTab === "closing" ? (
+            <div className="space-y-3">
+              <ClosingThresholdControls
+                value={closingThresholds}
+                onApply={handleClosingThresholdsApply}
+                applying={closingApplying}
+                appliedAt={closingAppliedAt}
+              />
+              <ClosingMoveTable
+              rows={closingRows}
+              baselineIterationNo={closingMeta?.baselineIterationNo ?? null}
+              latestIterationNo={closingMeta?.latestIterationNo ?? null}
+              morningIterationNo={closingMeta?.morningIterationNo ?? null}
+              baselineTime={closingMeta?.baselineTime ?? null}
+              latestTime={closingMeta?.latestTime ?? null}
+              iterationCount={closingMeta?.iterationCount ?? 0}
+              tradeDate={tradeDate}
+              searchQuery={searchQuery}
+              latestCapturedAt={closingMeta?.latestTime ?? undefined}
+              historyVersion={historyVersion}
+              loading={loading}
+              emptyMessage={
+                closingMeta?.message ??
+                listMessage ??
+                (searchQuery.trim() && closingRows.length > 0
+                  ? "未找到匹配的标的"
+                  : `${formatTradeDateLabel(tradeDate)} 暂无符合条件的尾盘异动`)
+              }
+            />
+            </div>
           ) : (
             <DarkTradeTable
               rows={filteredRows}
