@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "暗盘资金榜 | GrayMarket",
-  description: "东方财富暗盘资金监控 - 个股暗盘资金实时榜单",
+  description: "暗盘资金监控 - 个股暗盘资金实时榜单",
 };
 
 export default function RootLayout({

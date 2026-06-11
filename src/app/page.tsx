@@ -254,8 +254,7 @@ export default function HomePage() {
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-4">
           <div>
             <div className="flex items-center gap-2">
-              <span className="text-xl font-bold text-[#FF5500]">东方财富</span>
-              <span className="text-lg font-semibold text-white">暗盘资金榜</span>
+              <span className="text-xl font-bold text-[#FF5500]">暗盘资金榜</span>
             </div>
             <p className="mt-1 text-xs text-zinc-500">监测主力交易动向 · 把握投资机会</p>
           </div>

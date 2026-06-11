@@ -1,10 +1,10 @@
 # GrayMarket 暗盘资金监控
 
-基于东方财富 `darktrade` 接口的 A 股暗盘资金实时监控。独立 Worker 在交易时段采集数据，经本地 JSON 队列写入 Supabase；Web 端仿东方财富暗盘资金榜 UI 展示榜单与个股折线图。
+基于 `darktrade` 接口的 A 股暗盘资金实时监控。独立 Worker 在交易时段采集数据，经本地 JSON 队列写入 Supabase；Web 端展示暗盘资金榜与个股折线图。
 
 ## 功能
 
-- 交易时段（09:30–11:30、13:00–15:00）自动轮询东方财富接口
+- 交易时段（09:30–11:30、13:00–15:00）自动轮询 darktrade 接口
 - 分页采集全量个股（StartPage 递增直至无数据）
 - 本地 JSON 队列 → Supabase 批量写入，成功后删除本地文件
 - 每轮采集完成后间隔 10 秒开始下一轮
@@ -101,7 +101,7 @@ src/
   app/              # Next.js 页面与 API
   components/       # UI 组件
   lib/
-    eastmoney/      # 东方财富 API 客户端
+    eastmoney/      # darktrade API 客户端
     queue/          # 本地队列与 DB 写入
     supabase/       # Supabase 客户端
 scripts/worker.ts   # 采集 Worker
@@ -116,6 +116,6 @@ supabase/migrations/
 
 ## 注意事项
 
-- 暗盘资金为东方财富量化模型估算值，非官方数据
+- 暗盘资金为量化模型估算值，非官方数据
 - 接口可能限流，可通过 `WORKER_PAGE_DELAY_MS` 调大间隔
 - `service_role` key 仅用于 Worker，不要提交到前端或公开仓库
