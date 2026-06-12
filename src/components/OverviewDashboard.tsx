@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { EChartsOption } from "echarts";
 import { formatCapital, formatPercent } from "@/lib/eastmoney/client";
 import { computeOverviewAnalytics } from "@/lib/analytics/overview-stats";
@@ -170,15 +170,24 @@ export function OverviewDashboard({
   emptyMessage,
 }: OverviewDashboardProps) {
   const [intraday, setIntraday] = useState<IntradayBehavior | null>(null);
+  const behaviorCache = useRef(new Map<string, IntradayBehavior | null>());
 
   useEffect(() => {
+    const cached = behaviorCache.current.get(tradeDate);
+    if (cached !== undefined) {
+      setIntraday(cached);
+      return;
+    }
+
     let cancelled = false;
 
     void fetch(`/api/overview/behavior?date=${tradeDate}`)
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || data.error) return;
-        setIntraday(data.intraday ?? null);
+        const next = (data.intraday ?? null) as IntradayBehavior | null;
+        behaviorCache.current.set(tradeDate, next);
+        setIntraday(next);
       })
       .catch(() => {
         // Intraday stats are optional.

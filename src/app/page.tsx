@@ -3,8 +3,10 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DatePicker, buildAllowedTradeDates, isAllowedTradeDate, todayYyyymmdd } from "@/components/DatePicker";
 import { ClosingMoveTable } from "@/components/ClosingMoveTable";
+import { ClosingContinuationStatsPanel } from "@/components/ClosingContinuationStatsPanel";
 import { ClosingThresholdControls } from "@/components/ClosingThresholdControls";
 import { OverviewDashboard } from "@/components/OverviewDashboard";
+import { RotationReviewDashboard } from "@/components/RotationReviewDashboard";
 import { DarkTradeTable, type TableSnapshot } from "@/components/DarkTradeTable";
 import { DisclaimerBanner } from "@/components/DisclaimerBanner";
 import { SearchBox } from "@/components/SearchBox";
@@ -12,7 +14,21 @@ import {
   invalidateStockHistoryCache,
   preloadChartLibrary,
 } from "@/lib/client/stock-history-cache";
+import {
+  closingTabCacheKey,
+  getClosingTabCache,
+  getLatestTabCache,
+  getReviewTabCache,
+  latestTabCacheKey,
+  reviewTabCacheKey,
+  setClosingTabCache,
+  setLatestTabCache,
+  setReviewTabCache,
+  shouldRefreshTabData,
+  type LatestTabBundle,
+} from "@/lib/client/tab-page-cache";
 import type { ClosingMoveRow } from "@/lib/analytics/closing-move";
+import type { ClosingContinuationStats } from "@/lib/analytics/closing-continuation-stats";
 import {
   closingThresholdsToQuery,
   DEFAULT_CLOSING_THRESHOLDS,
@@ -20,6 +36,10 @@ import {
   saveClosingThresholdsToStorage,
   type ClosingThresholds,
 } from "@/lib/analytics/closing-thresholds";
+import type {
+  RotationGroupBy,
+  RotationReviewResult,
+} from "@/lib/analytics/sector-rotation";
 import { TABS, dedupeSnapshotsByStockCode, filterSnapshots, type TabKey } from "@/lib/eastmoney/tabs";
 import type { SortDirection, SortField } from "@/lib/eastmoney/types";
 
@@ -67,6 +87,8 @@ export default function HomePage() {
   const [activeTab, setActiveTab] = useState<TabKey>("overview");
   const [closingRows, setClosingRows] = useState<ClosingMoveRow[]>([]);
   const [closingMeta, setClosingMeta] = useState<ClosingMeta | null>(null);
+  const [closingStats, setClosingStats] = useState<ClosingContinuationStats | null>(null);
+  const [closingStatsLoading, setClosingStatsLoading] = useState(false);
   const [closingThresholds, setClosingThresholds] = useState<ClosingThresholds>(
     DEFAULT_CLOSING_THRESHOLDS,
   );
@@ -74,6 +96,9 @@ export default function HomePage() {
   const [closingApplying, setClosingApplying] = useState(false);
   const [closingAppliedAt, setClosingAppliedAt] = useState<number | null>(null);
   const closingThresholdsRef = useRef(closingThresholds);
+  const [reviewData, setReviewData] = useState<RotationReviewResult | null>(null);
+  const [reviewGroupBy, setReviewGroupBy] = useState<RotationGroupBy>("industry");
+  const [reviewDays, setReviewDays] = useState(10);
   const [searchQuery, setSearchQuery] = useState("");
   const [disclaimerAck, setDisclaimerAck] = useState(true);
   const [mounted, setMounted] = useState(false);
@@ -91,11 +116,122 @@ export default function HomePage() {
     closingThresholdsRef.current = closingThresholds;
   }, [closingThresholds]);
 
+  const applyLatestBundle = useCallback((bundle: LatestTabBundle) => {
+    setRows(bundle.rows);
+    setIteration(bundle.iteration);
+    setDataSource(bundle.dataSource);
+    setLiveComplete(bundle.liveComplete);
+    setListMessage(bundle.listMessage);
+  }, []);
+
+  const clearDisplayStateForTab = useCallback((tab: TabKey) => {
+    if (tab === "review") {
+      setReviewData(null);
+      setIteration(null);
+      return;
+    }
+    if (tab === "closing") {
+      setClosingRows([]);
+      setClosingMeta(null);
+      setClosingStats(null);
+      setIteration(null);
+      return;
+    }
+    setRows([]);
+    setIteration(null);
+    setListMessage(null);
+  }, []);
+
+  const restoreActiveTabFromCache = useCallback(
+    (tab: TabKey, date: string) => {
+      if (tab === "review") {
+        const cached = getReviewTabCache(
+          reviewTabCacheKey(date, reviewGroupBy, reviewDays, closingThresholdsToQuery(closingThresholdsRef.current)),
+        );
+        if (cached) {
+          setReviewData(cached.data);
+          setLoading(false);
+          return true;
+        }
+        return false;
+      }
+
+      if (tab === "closing") {
+        const cached = getClosingTabCache(
+          closingTabCacheKey(date, closingThresholdsRef.current),
+        );
+        if (cached) {
+          setClosingRows(cached.rows);
+          setClosingMeta(cached.meta);
+          setIteration(
+            cached.meta.latestIterationNo
+              ? {
+                  id: "closing",
+                  tradeDate: date,
+                  iterationNo: cached.meta.latestIterationNo,
+                  completedAt: cached.meta.latestTime ?? null,
+                  recordCount: cached.rows.length,
+                  status: "completed",
+                }
+              : null,
+          );
+          setLoading(false);
+          return true;
+        }
+        return false;
+      }
+
+      const cached = getLatestTabCache(latestTabCacheKey(tab, date));
+      if (cached) {
+        applyLatestBundle(cached);
+        setLoading(false);
+        return true;
+      }
+      return false;
+    },
+    [applyLatestBundle, reviewGroupBy, reviewDays],
+  );
+
   const loadClosing = useCallback(
     async (showLoading: boolean, thresholds: ClosingThresholds) => {
-      if (showLoading) {
+      const cacheKey = closingTabCacheKey(tradeDate, thresholds);
+      const cached = getClosingTabCache(cacheKey);
+
+      if (cached && !shouldRefreshTabData(tradeDate, cached.fetchedAt)) {
+        setClosingRows(cached.rows);
+        setClosingMeta(cached.meta);
+        setIteration(
+          cached.meta.latestIterationNo
+            ? {
+                id: "closing",
+                tradeDate,
+                iterationNo: cached.meta.latestIterationNo,
+                completedAt: cached.meta.latestTime ?? null,
+                recordCount: cached.rows.length,
+                status: "completed",
+              }
+            : null,
+        );
+        setError(null);
+        setDataSource("database");
+        setLiveComplete(true);
+        if (showLoading) {
+          setLoading(false);
+        }
+        return true;
+      }
+
+      let blockUi = showLoading;
+      if (cached && showLoading) {
+        setClosingRows(cached.rows);
+        setClosingMeta(cached.meta);
+        blockUi = false;
+        setLoading(false);
+      } else if (showLoading) {
+        clearDisplayStateForTab("closing");
         setLoading(true);
       }
+
       try {
         const res = await fetch(
           `/api/closing/moves?date=${tradeDate}&${closingThresholdsToQuery(thresholds)}`,
@@ -108,12 +244,7 @@ export default function HomePage() {
           return false;
         }
 
-        setError(null);
-        setDataSource("database");
-        setLiveComplete(true);
-        setListMessage(data.message ?? null);
-        setClosingRows(data.rows ?? []);
-        setClosingMeta({
+        const meta = {
           baselineIterationNo: data.baselineIterationNo ?? null,
           latestIterationNo: data.latestIterationNo ?? null,
           morningIterationNo: data.morningIterationNo ?? null,
@@ -121,7 +252,14 @@ export default function HomePage() {
           latestTime: data.latestTime ?? null,
           iterationCount: data.iterationCount ?? 0,
           message: data.message ?? null,
-        });
+        };
+
+        setError(null);
+        setDataSource("database");
+        setLiveComplete(true);
+        setListMessage(data.message ?? null);
+        setClosingRows(data.rows ?? []);
+        setClosingMeta(meta);
         setIteration(
           data.latestIterationNo
             ? {
@@ -134,17 +272,100 @@ export default function HomePage() {
               }
             : null,
         );
+        setClosingTabCache(cacheKey, {
+          rows: data.rows ?? [],
+          meta,
+          fetchedAt: Date.now(),
+        });
         return true;
       } catch (err) {
         setError(err instanceof Error ? err.message : "加载失败");
         return false;
       } finally {
-        if (showLoading) {
+        if (blockUi) {
           setLoading(false);
         }
       }
     },
-    [tradeDate],
+    [tradeDate, clearDisplayStateForTab],
+  );
+
+  const loadClosingStats = useCallback(async () => {
+    setClosingStatsLoading(true);
+    try {
+      const thresholdsQuery = closingThresholdsToQuery(closingThresholdsRef.current);
+      const res = await fetch(
+        `/api/closing/stats?endDate=${tradeDate}&days=30&${thresholdsQuery}`,
+        { cache: "no-store" },
+      );
+      const data = await res.json();
+      if (data.error) return;
+      setClosingStats(data as ClosingContinuationStats);
+    } catch {
+      // Non-fatal.
+    } finally {
+      setClosingStatsLoading(false);
+    }
+  }, [tradeDate]);
+
+  const loadReview = useCallback(
+    async (showLoading: boolean, groupBy: RotationGroupBy, days: number) => {
+      const thresholdsQuery = closingThresholdsToQuery(closingThresholdsRef.current);
+      const cacheKey = reviewTabCacheKey(tradeDate, groupBy, days, thresholdsQuery);
+      const cached = getReviewTabCache(cacheKey);
+
+      if (cached && !shouldRefreshTabData(tradeDate, cached.fetchedAt)) {
+        setReviewData(cached.data);
+        setError(null);
+        setDataSource("database");
+        setLiveComplete(true);
+        if (showLoading) {
+          setLoading(false);
+        }
+        return true;
+      }
+
+      let blockUi = showLoading;
+      if (cached && showLoading) {
+        setReviewData(cached.data);
+        blockUi = false;
+        setLoading(false);
+      } else if (showLoading) {
+        clearDisplayStateForTab("review");
+        setLoading(true);
+      }
+
+      try {
+        const res = await fetch(
+          `/api/review/rotation?endDate=${tradeDate}&days=${days}&groupBy=${groupBy}&${thresholdsQuery}`,
+          { cache: "no-store" },
+        );
+        const data = await res.json();
+
+        if (data.error) {
+          setError(data.error);
+          return false;
+        }
+
+        const result = data as RotationReviewResult;
+        setError(null);
+        setDataSource("database");
+        setLiveComplete(true);
+        setListMessage(result.message ?? null);
+        setReviewData(result);
+        setReviewTabCache(cacheKey, result);
+        setIteration(null);
+        return true;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "加载失败");
+        return false;
+      } finally {
+        if (blockUi) {
+          setLoading(false);
+        }
+      }
+    },
+    [tradeDate, clearDisplayStateForTab],
   );
 
   const handleClosingThresholdsApply = useCallback(
@@ -156,14 +377,20 @@ export default function HomePage() {
       const ok = await loadClosing(true, next);
       if (ok) {
         setClosingAppliedAt(Date.now());
+        void loadClosingStats();
       }
       setClosingApplying(false);
     },
-    [loadClosing],
+    [loadClosing, loadClosingStats],
   );
 
   useEffect(() => {
-    if (activeTab === "stock" || activeTab === "overview" || activeTab === "closing") {
+    if (
+      activeTab === "stock" ||
+      activeTab === "overview" ||
+      activeTab === "closing" ||
+      activeTab === "review"
+    ) {
       preloadChartLibrary();
     }
   }, [activeTab]);
@@ -234,9 +461,27 @@ export default function HomePage() {
     let cancelled = false;
 
     async function loadLatest(showLoading: boolean) {
-      if (showLoading && !cancelled) {
+      const cacheKey = latestTabCacheKey(activeTab, tradeDate);
+      const cached = getLatestTabCache(cacheKey);
+
+      if (cached && !shouldRefreshTabData(tradeDate, cached.fetchedAt)) {
+        applyLatestBundle(cached);
+        if (showLoading && !cancelled) {
+          setLoading(false);
+        }
+        return;
+      }
+
+      let blockUi = showLoading;
+      if (cached && showLoading && !cancelled) {
+        applyLatestBundle(cached);
+        blockUi = false;
+        setLoading(false);
+      } else if (showLoading && !cancelled) {
+        clearDisplayStateForTab(activeTab);
         setLoading(true);
       }
+
       try {
         const res = await fetch(
           `/api/iterations/latest?date=${tradeDate}&tab=${activeTab}`,
@@ -250,13 +495,8 @@ export default function HomePage() {
           return;
         }
 
-        setError(null);
-        setListMessage(data.message ?? null);
-        setDataSource(data.source ?? "database");
-        setLiveComplete(data.complete !== false);
-        setIteration(data.iteration);
-        setRows(
-          dedupeSnapshotsByStockCode(
+        const bundle: LatestTabBundle = {
+          rows: dedupeSnapshotsByStockCode(
             (data.snapshots ?? []).map(
               (s: {
                 stockCode: string;
@@ -279,13 +519,22 @@ export default function HomePage() {
               }),
             ),
           ),
-        );
+          iteration: data.iteration ?? null,
+          dataSource: data.source ?? "database",
+          liveComplete: data.complete !== false,
+          listMessage: data.message ?? null,
+          fetchedAt: Date.now(),
+        };
+
+        setLatestTabCache(cacheKey, bundle);
+        applyLatestBundle(bundle);
+        setError(null);
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "加载失败");
         }
       } finally {
-        if (!cancelled) {
+        if (!cancelled && blockUi) {
           setLoading(false);
         }
       }
@@ -295,6 +544,7 @@ export default function HomePage() {
       dataSource === "live" && !liveComplete ? 15_000 : POLL_INTERVAL_MS;
 
     if (!thresholdsReady) return;
+    if (activeTab === "review") return;
 
     const initialTimer = window.setTimeout(() => {
       if (cancelled) return;
@@ -318,17 +568,27 @@ export default function HomePage() {
       window.clearTimeout(initialTimer);
       window.clearInterval(pollTimer);
     };
-  }, [tradeDate, activeTab, dataSource, liveComplete, thresholdsReady, loadClosing]);
+  }, [tradeDate, activeTab, dataSource, liveComplete, thresholdsReady, loadClosing, applyLatestBundle, clearDisplayStateForTab]);
+
+  useEffect(() => {
+    if (!thresholdsReady || activeTab !== "review") return;
+    void loadReview(true, reviewGroupBy, reviewDays);
+  }, [tradeDate, activeTab, reviewGroupBy, reviewDays, thresholdsReady, loadReview]);
+
+  useEffect(() => {
+    if (!thresholdsReady || activeTab !== "closing") return;
+    void loadClosingStats();
+  }, [tradeDate, activeTab, closingThresholds, thresholdsReady, loadClosingStats]);
 
   const handleTabChange = (tab: TabKey) => {
     if (tab === activeTab) return;
     setActiveTab(tab);
     setSelectedStock(null);
     setSearchQuery("");
-    setRows([]);
-    setClosingRows([]);
-    setClosingMeta(null);
-    setLoading(true);
+    if (!restoreActiveTabFromCache(tab, tradeDate)) {
+      clearDisplayStateForTab(tab);
+      setLoading(true);
+    }
   };
 
   const filteredRows = useMemo(
@@ -347,13 +607,13 @@ export default function HomePage() {
     setTradeDate(date);
     setSelectedStock(null);
     setSearchQuery("");
-    setRows([]);
-    setClosingRows([]);
-    setClosingMeta(null);
     setListMessage(null);
-    setLoading(true);
     invalidateStockHistoryCache(tradeDate);
     invalidateStockHistoryCache(date);
+    if (!restoreActiveTabFromCache(activeTab, date)) {
+      clearDisplayStateForTab(activeTab);
+      setLoading(true);
+    }
   };
 
   const handleSort = (field: SortField) => {
@@ -423,7 +683,38 @@ export default function HomePage() {
           )}
           {activeTab === "overview" && <div className="flex-1" />}
           <div className="text-sm text-zinc-400">
-            {activeTab === "closing" ? (
+            {activeTab === "review" ? (
+              reviewData && reviewData.dates.length >= 2 ? (
+                <>
+                  轮动指数{" "}
+                  <span className="text-[#FF5500]">
+                    {reviewData.rotationIndex.toFixed(2)}
+                  </span>
+                  {" · "}
+                  TOP5 延续率 {Math.round(reviewData.continuationRate * 100)}%
+                  {" · "}
+                  回看 {reviewData.dates.length} 个交易日
+                  {searchQuery.trim() && (
+                    <>
+                      {" · "}
+                      筛选{" "}
+                      {
+                        reviewData.sectorRows.filter((row) =>
+                          row.sector.toLowerCase().includes(searchQuery.trim().toLowerCase()),
+                        ).length
+                      }{" "}
+                      个{reviewGroupBy === "industry" ? "行业" : "概念"}
+                    </>
+                  )}
+                </>
+              ) : loading ? (
+                "正在分析板块轮动..."
+              ) : (
+                reviewData?.message ??
+                listMessage ??
+                "需至少 2 个交易日 Worker 采样数据"
+              )
+            ) : activeTab === "closing" ? (
               closingMeta ? (
                 <>
                   13:00基准 #{closingMeta.baselineIterationNo ?? "—"} → 最新 #
@@ -477,10 +768,6 @@ export default function HomePage() {
                         筛选 {filteredRows.length} 条
                       </>
                     )}
-                    {" · "}
-                    <span className="text-zinc-500">
-                      运行 npm run worker:once 可持久化到 Supabase
-                    </span>
                   </>
                 ) : (
                   <>
@@ -538,6 +825,11 @@ export default function HomePage() {
                 applying={closingApplying}
                 appliedAt={closingAppliedAt}
               />
+              <ClosingContinuationStatsPanel
+                stats={closingStats}
+                todayRows={closingRows}
+                loading={closingStatsLoading}
+              />
               <ClosingMoveTable
               rows={closingRows}
               baselineIterationNo={closingMeta?.baselineIterationNo ?? null}
@@ -560,6 +852,23 @@ export default function HomePage() {
               }
             />
             </div>
+          ) : activeTab === "review" ? (
+            <RotationReviewDashboard
+              endDate={tradeDate}
+              endDateLabel={formatTradeDateLabel(tradeDate)}
+              searchQuery={searchQuery}
+              loading={loading}
+              data={reviewData}
+              groupBy={reviewGroupBy}
+              days={reviewDays}
+              onGroupByChange={setReviewGroupBy}
+              onDaysChange={setReviewDays}
+              emptyMessage={
+                reviewData?.message ??
+                listMessage ??
+                "需至少 2 个交易日 Worker 采样数据"
+              }
+            />
           ) : (
             <DarkTradeTable
               rows={filteredRows}

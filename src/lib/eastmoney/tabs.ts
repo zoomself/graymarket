@@ -1,4 +1,4 @@
-export type TabKey = "overview" | "stock" | "industry" | "concept" | "closing";
+export type TabKey = "overview" | "stock" | "industry" | "concept" | "closing" | "review";
 
 export interface TabConfig {
   key: TabKey;
@@ -14,6 +14,7 @@ export const TABS: TabConfig[] = [
   { key: "industry", label: "行业板块", market: "90", datetype: "2" },
   { key: "concept", label: "概念板块", market: "90", datetype: "3" },
   { key: "closing", label: "尾盘异动", market: "", datetype: "" },
+  { key: "review", label: "历史复盘", market: "", datetype: "" },
 ];
 
 export function getTabConfig(key: TabKey): TabConfig {
@@ -25,6 +26,7 @@ export function parseTabKey(value: string | null | undefined): TabKey {
   if (value === "block" || value === "industry") return "industry";
   if (value === "concept") return "concept";
   if (value === "closing" || value === "tail") return "closing";
+  if (value === "review" || value === "rotation") return "review";
   return "stock";
 }
 
